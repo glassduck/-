@@ -1,1 +1,302 @@
-# -데이터 공학 기말과제
+# 데이터 공학 기말과제
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(RPostgreSQL)
+library(DBI)
+library(tidyverse)
+library(datamodelr)
+
+pgdrv<-dbDriver("PostgreSQL")
+
+con<-dbConnect(pgdrv, dbname="dvd",
+               port="5432",
+               user="postgres",
+               password="note7573",
+               host="localhost")
+
+```
+
+__데이터 불러오기__
+```{r}
+category<- tbl(con, "category") %>% collect()
+inventory<- tbl(con, "inventory") %>% collect()
+customer<- tbl(con, "customer") %>% collect()
+film_category<- tbl(con, "film_category") %>% collect()
+rental<- tbl(con, "rental") %>% collect()
+film<- tbl(con, "film") %>% collect()
+payment<- tbl(con, "payment") %>% collect()
+address<- tbl(con, "address") %>% collect()
+city<- tbl(con, "city") %>% collect()
+staff<- tbl(con, "staff") %>% collect()
+country<- tbl(con, "country") %>% collect()
+film_actor<- tbl(con, "film_actor") %>% collect()
+actor<- tbl(con, "actor") %>% collect()
+store<- tbl(con, "store") %>% collect()
+
+```
+
+# What are the top and least rented (in-demand) genres and what are their total sales?
+```{r}
+model_1<-dm_from_data_frames(category, inventory, film_category, rental, film, customer, payment)
+
+model_1<-dm_add_references(model_1,
+  category$category_id == film_category$category_id,
+  inventory$inventory_id == rental$inventory_id,
+  film_category$film_id == film$film_id,
+  film$film_id == inventory$film_id,
+  rental$customer_id == customer$customer_id,
+  rental$rental_id == payment$rental_id
+)
+
+model_1_graph <- dm_create_graph(model_1, rankdir="LR",col_attr=c("column", "type"))
+dm_render_graph(model_1_graph)
+
+qry1 <- "WITH A1 AS (SELECT c.name AS Genre, 
+                      COUNT(cu.customer_id) AS Total_rent_demand
+                      FROM category as c
+                      INNER JOIN film_category as fc
+                      USING(category_id)
+                      INNER JOIN film as f
+                      USING(film_id)
+                      INNER JOIN inventory as i
+                      USING(film_id)
+                      INNER JOIN rental as r
+                      USING(inventory_id)
+                      INNER JOIN customer as cu
+                      USING(customer_id)
+                      GROUP BY c.name
+                      ORDER BY 2 DESC),
+              A2 AS (SELECT c.name AS Genre, 
+                      SUM(p.amount) AS Total_sales
+                      FROM category as c
+                      INNER JOIN film_category as fc
+                      USING(category_id)
+                      INNER JOIN film as f
+                      USING(film_id)
+                      INNER JOIN inventory as i
+                      USING(film_id)
+                      INNER JOIN rental as r
+                      USING(inventory_id)
+                      INNER JOIN payment as p
+                      USING(rental_id)
+                      GROUP BY c.name
+                      ORDER BY 2 DESC)
+          SELECT A1.genre, A1.total_rent_demand, A2.total_sales
+          FROM A1
+          JOIN A2
+          ON A1.genre = A2.genre;"
+
+answer1 <- dbGetQuery(con, qry1)
+DT::datatable(answer1)
+
+plot(answer1$total_rent_demand,answer1$total_sales)
+
+reg<-lm(total_sales~total_rent_demand,data=answer1)
+summary(reg)
+```
+
+__가장 높은 rent 수요를 보인 장르는 Sport이고 이때의 총 판매액은 4892.19이다.__
+
+__반면 가장 낮은 rent 수요를 보인 장르는 Music 이고 이때의 총 판매액은 3071.52이다.__
+
+__추가적으로, 경제학적으로 보았을 때,rent 수요와 총 판매액 간의 관계를 살펴보기 위해 plot을 그려보았다.__
+
+__그 결과, 두 변수 간의 양의 상관관계가 존재한다는 생각이 들었고 이에 추가적으로, 회귀분석을 진행한 결과, demand가 한단위 증가할 수록 sales는 3.48가량 늘어났다.__
+
+__다만, 이 회귀모델의 R스퀘어는 0.69로 높지는 않았다.__
+
+
+# Can we know how many distinct users have rented each genre?
+
+```{r}
+model_2 <- dm_from_data_frames(category, film_category, film, 
+                                inventory, rental, customer)
+
+model_2 <- dm_add_references(model_2,
+  category$category_id == film_category$category_id,
+  film_category$film_id == film$film_id,
+  film$film_id == inventory$film_id,
+  inventory$inventory_id == rental$inventory_id,
+  rental$customer_id == customer$customer_id
+)
+
+model_2_graph <- dm_create_graph(model_2, rankdir="LR", col_attr=c("column", "type"))
+dm_render_graph(model_2_graph)
+
+
+qry2 <- "SELECT c.name AS Genre, 
+          COUNT(DISTINCT cu.customer_id) AS Total_rent_demand_distinct
+          FROM category as c
+          INNER JOIN film_category as fc
+          USING(category_id)
+          JOIN film as f
+          USING(film_id)
+          JOIN inventory as i
+          USING(film_id)
+          JOIN rental as r
+          USING(inventory_id)
+          JOIN customer as cu
+          USING(customer_id)
+          GROUP BY c.name
+          ORDER BY 2 DESC;"
+answer2 <- dbGetQuery(con, qry2)
+DT::datatable(answer2)
+```
+__분석 결과, 장르별 고유한 사용자수를 파악할 수 있었고, 스포츠 장르가 519로 가장 높았고 여행 분야가 442로 가장 낮음을 확인할 수 있었다.__
+
+# What is the average rental rate for each genre? (from the highest to the lowest)
+
+```{r}
+model_3 <- dm_from_data_frames(category, film_category, film)
+
+model_3 <- dm_add_references(model_3,
+  category$category_id == film_category$category_id,
+  film_category$film_id == film$film_id
+)
+
+model_3_graph <- dm_create_graph(model_3, rankdir="LR", col_attr=c("column", "type"))
+dm_render_graph(model_3_graph)
+
+qry3 <- "SELECT c.name AS Genre, 
+          ROUND(AVG(f.rental_rate),2) AS average_rental_rate
+          FROM category as c
+          INNER JOIN film_category as fc
+          USING(category_id)
+          INNER JOIN film as f
+          USING(film_id)
+          GROUP BY c.name
+          ORDER BY 2 DESC;"
+
+answer3 <- dbGetQuery(con, qry3)
+DT::datatable(answer3)
+```
+__평균 대여 비율의 경우, 게임이 3.25로 가장 높았고 액션 장르가 2.65로 가장 낮음을 확인할 수 있었다.__
+
+# How many rented films were returned late, early, and on time?
+```{r}
+
+model_4<- dm_from_data_frames(film, inventory, rental)
+
+model_4 <- dm_add_references(model_4,
+  film$film_id == inventory$film_id,
+  inventory$inventory_id == rental$inventory_id
+)
+
+model_4_graph <- dm_create_graph(model_4, rankdir="LR", col_attr=c("column", "type"))
+dm_render_graph(model_4_graph)
+
+qry4 <- "WITH A1 AS (SELECT *, DATE_PART('day', return_date - rental_date) AS date_difference
+                      FROM rental),
+          A2 AS (SELECT rental_duration, date_difference,
+                        CASE
+                          WHEN rental_duration > date_difference THEN 'Returned early'
+                          WHEN rental_duration = date_difference THEN 'Returned on Time'
+                          ELSE 'Returned late'
+                        END AS Return_status
+                  FROM film f
+                  INNER JOIN inventory i
+                  USING(film_id)
+                  INNER JOIN A1
+                  USING(inventory_id))
+          SELECT Return_status, COUNT(*) AS total_number_of_films
+          FROM A2
+          GROUP BY 1
+          ORDER BY 2 DESC;"
+
+answer4<- dbGetQuery(con, qry4)
+DT::datatable(answer4)
+```
+__이르게 반납된 영화의 갯수는 7738개, 제 기간에 반납된 영화는 1720개, 그리고 늦게 반납된 영화는 6586개 였다.__
+
+# In which countries does Rent A Film have a presence and what is the customer base in each country? What are the total sales in each country? (from most to least)
+
+```{r}
+model_5 <- dm_from_data_frames(country, city, address, customer, payment)
+
+model_5 <- dm_add_references(model_5,
+  country$country_id == city$country_id,
+  city$city_id == address$city_id,
+  address$address_id == customer$address_id,
+  customer$customer_id == payment$customer_id
+)
+
+model_5_graph <- dm_create_graph(model_5, rankdir="LR", col_attr=c("column", "type"))
+dm_render_graph(model_5_graph)
+
+qry5 <- "SELECT country,
+                COUNT(DISTINCT customer_id) AS customer_base,
+                SUM(amount) AS total_sales
+          FROM country
+          INNER JOIN city as ct
+          USING(country_id)
+          INNER JOIN address as ad
+          USING(city_id)
+          INNER JOIN customer as cu
+          USING(address_id)
+          INNER JOIN payment as p
+          USING(customer_id)
+          GROUP BY country
+          ORDER BY 2 DESC, 3 DESC;"
+
+answer5 <- dbGetQuery(con, qry5)
+DT::datatable(answer5)
+
+plot(answer5$customer_base,answer5$total_sales)
+reg1<-lm(total_sales~customer_base,data=answer5)
+summary(reg1)
+```
+
+__인도가 60개의 가장 많은 customer base를 가지며 총 판매량 또한 6034.78로 가장 높았다.__
+
+__반면 아메리카 사모아라는 나라가 가장 적은 customer base를 가지고 있었으며, customer base가 1개인 여러 나라들 중에서도 가장 작고 전체 국가에서도 가장 작은 47.85의 판매량을 보였다.__
+
+__추가적으로, customer_base와 total_sales이 관계를 plot으로 그려본 결과, 양의 선형관계를 파악할 수 있었고 회귀분석 결과, customer base 한 단위의 증가가 총 판매량을 100가량 높이는 것으로 확인되었으며, 이때의 R스퀘어 값이 0.998로 굉장히 높게 나왔다.__
+
+__물론 동일한 customer base 갯수를 지닌 나라가 데이터에 많아 정확하다고 보기는 어렵지만 십 수개 이상의 customer base를 지니고 있는 국가에서는 하나의 customer base를 늘릴 때마다 예상 판매량 증가를 100개로 예측하기에 충분한 근거로 보인다.__
+
+# Who are the top 5 customers per total sales and can we get their details just in case Rent A Film wants to reward them?
+
+```{r}
+model_6 <- dm_from_data_frames(country, city, address, customer, payment)
+
+model_6 <- dm_add_references(model_6,
+  customer$address_id == address$address_id,
+  address$city_id == city$city_id,
+  city$country_id == country$country_id,
+  customer$customer_id == payment$customer_id
+)
+
+model_6_graph <- dm_create_graph(model_6, rankdir="LR", col_attr=c("column", "type"))
+dm_render_graph(model_6_graph)
+
+qry6 <- "WITH A1 AS (SELECT *, 
+                            first_name || ' ' || last_name AS full_name
+                      FROM customer)
+          SELECT full_name,
+                  email,
+                  address,
+                  phone,
+                  city,
+                  country,
+                  SUM(amount) AS per_total_sales
+          FROM A1
+          INNER JOIN address as ad
+          USING(address_id)
+          INNER JOIN city as ct
+          USING(city_id)
+          INNER JOIN country
+          USING(country_id)
+          INNER JOIN payment as p
+          USING(customer_id)
+          GROUP BY 1,2,3,4,5,6
+          ORDER BY 7 DESC
+          LIMIT 5;"
+
+answer6 <- dbGetQuery(con, qry6)
+DT::datatable(answer6)
+```
+__가장 높은 1인당 판매액을 기록한 손님은 Eleanor Hunt라는 고객이며 Runion이란 국가 출신이며 그 사람의 1인당 판매액은 211.55이다.__

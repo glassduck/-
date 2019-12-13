@@ -312,4 +312,4 @@ qry6 <- "WITH A1 AS (SELECT *,
 answer6 <- dbGetQuery(con, qry6)
 DT::datatable(answer6)
 ```
-__가장 높은 1인당 매출을 기록한  손님은 Eleanor Hunt라는 고객이며 Runion이란 국가 출신이며 그 사람의 1인당 매출은 211.55이다.__
+__가장 높은 1인당 매출을 기록한 손님은 Eleanor Hunt라는 고객이며 Runion이란 국가 출신이며 그 사람의 1인당 매출은 211.55이다.__
